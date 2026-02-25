@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "integration: requiere NIM y MinIO reales (no ejecutar sin infraestructura)",
+]

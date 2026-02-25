@@ -1,0 +1,35 @@
+# ===========================================================================
+# RAG_P_contextual_v2 - Dependencias
+# ===========================================================================
+# Instalacion: pip install -r requirements.txt
+#
+# Nota: langchain-nvidia-ai-endpoints requiere endpoint NIM desplegado.
+# Sin NIM, los tests unitarios (pytest tests/) funcionan igualmente.
+
+# --- NVIDIA NIM ---
+langchain-nvidia-ai-endpoints>=0.3.0,<1.0
+
+# --- RAG Core ---
+langchain-core>=0.3.0,<1.0
+langchain-chroma>=0.2.0,<1.0
+chromadb>=0.5.0,<1.0
+
+# --- Datos (MinIO/Parquet) ---
+pandas>=2.0.0,<3.1
+pyarrow>=12.0.0,<24.0
+boto3>=1.28.0,<2.0
+
+# --- Utilidades ---
+python-dotenv>=1.0.0,<2.0
+
+# --- Hybrid Retrieval: BM25 ---
+tantivy>=0.22.0
+# rank-bm25 mantenido como fallback si Tantivy no compila en el entorno
+rank-bm25>=0.2.2,<0.3
+
+# --- Reranking ---
+# NVIDIARerank incluido via langchain-nvidia-ai-endpoints.
+# Requiere endpoint NIM de reranking (ej: nvidia/nv-rerankqa-mistral-4b-v3)
+
+# --- Testing ---
+pytest>=8.0.0,<10.0
