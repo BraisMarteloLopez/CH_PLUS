@@ -18,7 +18,8 @@ RAG_P/
 │       ├── __init__.py              # Factory get_retriever()
 │       ├── core.py                  # BaseRetriever, SimpleVectorRetriever, RetrievalConfig
 │       ├── hybrid_retriever.py      # BM25 + Vector + RRF
-│       ├── contextual_retriever.py  # Enriquecimiento LLM (Anthropic pattern)
+│       ├── contextual_retriever.py  # Enriquecimiento LLM + ContextualRetrieverPlus
+│       ├── entity_linker.py         # NER (spaCy) + indice invertido + cross-refs
 │       ├── reranker.py              # CrossEncoderReranker (NVIDIARerank)
 │       └── tantivy_index.py         # BM25 via Tantivy (Rust, fallback rank-bm25)
 │
@@ -29,9 +30,9 @@ RAG_P/
 │   ├── run.py                       # Entry point (--dry-run, -v)
 │   └── env.example                  # Plantilla .env
 │
-├── tests/                           # 147 unit + 15 integration tests (pytest)
+├── tests/                           # 189 unit + 3 integration tests (pytest)
 │   ├── conftest.py                  # Mocks condicionales (solo si paquete no instalado)
-│   ├── test_*.py                    # 19 archivos — ver README_TEST.md
+│   ├── test_*.py                    # 21 archivos — ver README_TEST.md
 │   └── integration/                 # Tests contra NIM + MinIO reales
 │       ├── conftest.py              # Carga .env real, fixtures de sesion
 │       └── test_*.py                # Requieren infraestructura accesible
@@ -49,15 +50,74 @@ RAG_P/
 |---|---|---|---|
 | `SIMPLE_VECTOR` | Embedding directo (NIM) | Cosine similarity (ChromaDB) | Opcional |
 | `CONTEXTUAL_HYBRID` | Enriquecimiento LLM + embedding | BM25 (Tantivy) + Vector + RRF | Opcional |
+| `CONTEXTUAL_HYBRID_PLUS` | Enriquecimiento LLM + NER cross-refs + embedding | BM25 (Tantivy) + Vector + RRF | Opcional |
 
 `CONTEXTUAL_HYBRID`: durante indexacion, cada documento se enriquece con contexto generado por LLM. El texto enriquecido se indexa en ChromaDB y Tantivy. Durante retrieval, se fusionan resultados BM25 + vectoriales via RRF, opcionalmente con reranking cross-encoder. El contenido original (no enriquecido) se usa para generacion. Requiere LLM incluso con `GENERATION_ENABLED=false`.
+
+`CONTEXTUAL_HYBRID_PLUS`: extiende `CONTEXTUAL_HYBRID` con cross-linking de entidades. Durante indexacion, despues del enriquecimiento LLM, spaCy NER extrae entidades nombradas de cada documento (PERSON, ORG, GPE, etc.), construye un indice invertido in-memory, y genera cross-references textuales entre documentos que comparten entidades. El texto final indexado es: contexto LLM + contenido original + cross-refs. Esto permite que BM25 capture terminos puente entre documentos, mejorando retrieval en bridge questions multi-hop. Requiere LLM + spaCy. Sin spaCy instalado, se comporta identicamente a `CONTEXTUAL_HYBRID` (degradacion graceful con warning en log).
+
+### Entity cross-linking (CONTEXTUAL_HYBRID_PLUS)
+
+Motivacion: en HotpotQA, ~80% de las preguntas son de tipo **bridge** (multi-hop). Ejemplo: "Where was the director of Sinister born?" requiere recuperar Doc A ("Sinister") para identificar al director (Scott Derrickson), y Doc B ("Scott Derrickson") para encontrar su lugar de nacimiento. El bi-encoder genera un vector mas cercano a "Sinister" que a "Scott Derrickson", por lo que Doc B frecuentemente no se recupera.
+
+Mecanismo: si Doc A ("Sinister") contiene una cross-reference textual `Related: Scott Derrickson (shared: scott derrickson)`, BM25 captura el termino "Scott Derrickson" en Doc A, promoviendo Doc B via RRF aunque el vector de la query no lo alcance directamente.
+
+```
+Flujo de indexacion CONTEXTUAL_HYBRID_PLUS:
+
+  [Docs] --> [LLM: genera contexto]                    (paso 1: igual que HYBRID)
+                |
+                v
+          [EnrichedChunks]
+                |
+  +-------------+-------------+
+  |                            |
+  v                            v
+[spaCy NER:                  [contexto LLM]
+ extrae PERSON, ORG,
+ GPE, LOC, ...]
+       |
+       v
+[EntityLinker:
+ indice invertido in-memory,
+ IDF filter (>5% corpus)]
+       |
+       v
+[Cross-refs textuales
+ por documento]
+       |
+       v
+[Doc + Contexto LLM + Cross-refs] --> [Index BM25+Vector]    (paso 4)
+```
+
+Componentes en `shared/retrieval/entity_linker.py`:
+
+| Componente | Funcion |
+|---|---|
+| `EntityNormalizer` | Lowercase + eliminar articulos + colapsar espacios + eliminar puntuacion (preserva guiones internos) |
+| `EntityExtractor` | spaCy NER con filtrado de tipos relevantes, deduplicacion, longitud minima 2 chars |
+| `EntityLinker` | Indice invertido + IDF filter + generacion de cross-refs (top-N docs con mas entidades compartidas) |
+| `DocEntities` | Dataclass intermedio: entidades extraidas por documento |
+
+Parametros configurables via `.env`:
+
+| Variable | Default | Descripcion |
+|---|---|---|
+| `ENTITY_MAX_CROSS_REFS` | 3 | Top-N documentos referenciados por documento |
+| `ENTITY_MIN_SHARED` | 1 | Minimo entidades compartidas para generar cross-ref |
+| `ENTITY_MAX_DOC_FRACTION` | 0.05 | Umbral IDF: ignorar entidades en >5% del corpus |
+
+Limitaciones aceptadas:
+- Normalizacion basica: no resuelve aliases (US/United States) ni formas parciales (Derrickson/Scott Derrickson). spaCy tipicamente reporta la forma completa en texto Wikipedia.
+- Modelo `en_core_web_sm` (15MB, solo NER). Suficiente para entidades nombradas en Wikipedia.
 
 ## Pipeline de evaluacion
 
 ```
 .env -> MTEBConfig -> MinIO/cache(Parquet) -> LoadedDataset
      -> shuffle(seed) -> slice(max_corpus)
-     -> [enrich(LLM) si CONTEXTUAL_HYBRID]
+     -> [enrich(LLM) si CONTEXTUAL_HYBRID / CONTEXTUAL_HYBRID_PLUS]
+     -> [NER + cross-linking (spaCy) si CONTEXTUAL_HYBRID_PLUS]
      -> index(ChromaDB + Tantivy)
      -> pre-embed queries (batch REST NIM)
      -> retrieve(local ChromaDB + BM25 + RRF, sync)
@@ -127,6 +187,15 @@ cp sandbox_mteb/env.example sandbox_mteb/.env
 # Editar .env con endpoints NIM y MinIO
 ```
 
+Para `CONTEXTUAL_HYBRID_PLUS` (entity cross-linking):
+
+```bash
+pip install spacy
+python -m spacy download en_core_web_sm
+```
+
+Sin spaCy instalado, `CONTEXTUAL_HYBRID_PLUS` funciona pero se comporta identicamente a `CONTEXTUAL_HYBRID` (sin cross-refs, warning en log).
+
 ```bash
 python -m sandbox_mteb.run                  # Run con .env
 python -m sandbox_mteb.run --dry-run        # Solo validar config
@@ -152,7 +221,7 @@ NIM_MAX_CONCURRENT_REQUESTS=32        # ATENCION: no NIM_MAX_CONCURRENT
 NIM_REQUEST_TIMEOUT=120               # ATENCION: no NIM_TIMEOUT
 
 # Retrieval
-RETRIEVAL_STRATEGY=SIMPLE_VECTOR      # SIMPLE_VECTOR | CONTEXTUAL_HYBRID
+RETRIEVAL_STRATEGY=SIMPLE_VECTOR      # SIMPLE_VECTOR | CONTEXTUAL_HYBRID | CONTEXTUAL_HYBRID_PLUS
 RETRIEVAL_K=20                        # Docs para metricas retrieval
 RETRIEVAL_PRE_FUSION_K=150            # Candidatos pre-RRF / pool reranker
 RETRIEVAL_RRF_K=60                    # Parametro k de RRF (CONTEXTUAL_HYBRID)
@@ -177,6 +246,11 @@ DEV_MODE=false                        # Subset con gold docs garantizados
 DEV_QUERIES=200
 DEV_CORPUS_SIZE=4000
 
+# Entity cross-linking (solo CONTEXTUAL_HYBRID_PLUS)
+ENTITY_MAX_CROSS_REFS=3               # Top-N docs referenciados por documento
+ENTITY_MIN_SHARED=1                   # Min entidades compartidas para cross-ref
+ENTITY_MAX_DOC_FRACTION=0.05          # Umbral IDF (ignorar entidades en >5% corpus)
+
 # MinIO
 MINIO_ENDPOINT=http://<minio-host>:9000
 MINIO_ACCESS_KEY=minioadmin
@@ -195,11 +269,11 @@ Tres archivos por run en `data/results/`:
 
 - `<run_id>.json`: config + metricas por query + doc_ids recuperados
 - `<run_id>_summary.csv`: 1 fila, metricas agregadas
-- `<run_id>_detail.csv`: N filas, una por query
+- `<run_id>_detail.csv`: N filas, una por query (incluye columna `question_type` para desglose bridge/comparison)
 
 ## Tests
 
-147 unit tests + 15 tests de integracion (162 total). Ejecutables con Python 3.10+.
+189 unit tests + 3 tests de integracion (192 total). Ejecutables con Python 3.10+.
 
 ```bash
 pytest tests/                      # Todo junto (unit + integracion)
@@ -208,7 +282,14 @@ pytest tests/ -m "not integration" # Solo unit
 pytest tests/integration/ -v       # Solo integracion
 ```
 
-**Mocking condicional:** `tests/conftest.py` solo mockea modulos de infraestructura (`boto3`, `langchain_*`, `chromadb`) si el paquete real no esta instalado. En entornos con NIM/MinIO, los modulos reales se preservan y los tests de integracion funcionan junto a los unit tests. En entornos restringidos, se mockean automaticamente y la integracion se salta.
+Tests relevantes para la estrategia `CONTEXTUAL_HYBRID_PLUS`:
+
+| Archivo | Tests | Que cubre |
+|---|---|---|
+| `test_entity_linker.py` | 31 | Normalizacion, extraccion NER (mock spaCy), indice invertido, IDF filter, cross-refs, pipeline completo, stats |
+| `test_contextual_retriever_plus.py` | 15 | Indexacion con/sin cross-refs, swap a contenido original, clear_index, factory `get_retriever()` |
+
+**Mocking condicional:** `tests/conftest.py` solo mockea modulos de infraestructura (`boto3`, `langchain_*`, `chromadb`) si el paquete real no esta instalado. En entornos con NIM/MinIO, los modulos reales se preservan y los tests de integracion funcionan junto a los unit tests. En entornos restringidos, se mockean automaticamente y la integracion se salta. Tests de `entity_linker.py` mockean spaCy NER para no depender de que `en_core_web_sm` este descargado.
 
 Detalle de cobertura por archivo, decisiones de mocking y diseno de tests de integracion: ver `README_TEST.md`.
 
@@ -228,7 +309,7 @@ Detalle de cobertura por archivo, decisiones de mocking y diseno de tests de int
 | DTm-1 | `_populate_from_dataframes()` extraido en `loader.py`. ~50 lineas duplicadas eliminadas. |
 | DTm-2 | `vector_store.py` usa API publica ChromaDB nativo en vez de `_store._collection` (API interna LangChain). |
 | DTm-3 | `run_sync()` compatible con event loops activos (Jupyter) via `ThreadPoolExecutor`. |
-| DTm-4 | 162 tests (147 unit + 15 integracion). pytest nativo, `conftest.py` centralizado, `pyproject.toml` configurado. |
+| DTm-4 | 192 tests (189 unit + 3 integracion). pytest nativo, `conftest.py` centralizado, `pyproject.toml` configurado. |
 | DTm-5 | Metricas secundarias fallidas: `MetricResult(value=0.0, error=...)` + warning (no desaparecen del JSON). |
 | DTm-6 | Retry con backoff exponencial en `_batch_embed_queries()`. |
 | DTm-7 | `_run_async` renombrado a `run_sync`. |
@@ -248,3 +329,6 @@ Detalle de cobertura por archivo, decisiones de mocking y diseno de tests de int
 | DTm-14 | Duplicacion contenido memoria: `retrieved_contents` + `generation_contents` (~1.5GB con 7K queries). Memoria suficiente en entorno actual. | Memoria. Baja prioridad. |
 | DTm-15 | ETL HotpotQA no asigna `answer_type="label"` a queries comparison (yes/no). El evaluador usa F1 en lugar de Accuracy para estas queries. Sin impacto numerico (tokens unicos: F1 y Accuracy equivalentes), pero `primary_metric_type` en CSV es incorrecto para analisis post-hoc. Corregir en ETL o detectar heuristicamente en el evaluador. | Clasificacion metrica. Baja prioridad. |
 | DTm-16 | Nemotron-3-nano responde "yes" a preguntas extractivas (~10% de queries en run 20260223_095004). El system prompt "For yes/no questions, start with yes or no" causa sobregeneralizacion en modelos pequenos. Deprime avg F1 en ~0.10 puntos. Mitigaciones: (a) condicionar instruccion yes/no por `answer_type` del query, (b) eliminar instruccion y delegar clasificacion al evaluador post-hoc, (c) usar modelo mas capaz. Referencia: `GENERATION_PROMPTS` en `sandbox_mteb/config.py`. | Calidad generacion. Media prioridad. |
+| DTm-18 | Entity normalization basica (lowercase + articulos). No resuelve aliases (US/United States) ni formas parciales (Derrickson/Scott Derrickson). Mejora futura: entity linking contra Wikidata o embedding similarity entre entidades. | Calidad cross-refs. Baja prioridad. |
+| DTm-19 | `ContextualRetrieverPlus` duplica ~30 lineas de `ContextualRetriever` (`retrieve`, `retrieve_by_vector`, `_swap_to_original_contents`, `_run_batch_generation`). Composicion elegida sobre herencia para evitar acoplamiento problematico. Extraer mixin si se anade una tercera variante. | Mantenimiento. Baja prioridad. |
+| DTm-20 | `question_type` en detail CSV requiere propagacion manual desde query metadata en `evaluator.py`. Considerar un mecanismo generico de metadata passthrough en `QueryEvaluationResult`. | Extensibilidad. Baja prioridad. |
