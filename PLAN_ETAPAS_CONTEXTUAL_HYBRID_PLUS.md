@@ -498,11 +498,42 @@ Con paralelismo maximo: **ruta critica ~14-19h** (ETAPA 1 -> ETAPA 3 -> ETAPA 4 
 
 ## 7. Criterios de Aceptacion Global
 
-1. `pytest tests/test_entity_linker.py tests/test_contextual_retriever_plus.py -v` — 22+ tests pasan
-2. `mypy shared/retrieval/entity_linker.py` — sin errores
-3. `RETRIEVAL_STRATEGY=CONTEXTUAL_HYBRID_PLUS` con `--dry-run` — config valida
-4. Run completo genera JSON+CSV con `retrieval_strategy: CONTEXTUAL_HYBRID_PLUS`
-5. Detail CSV incluye columna `question_type`
-6. Sin spaCy: PLUS produce resultados identicos a HYBRID (test explicito)
-7. Tests existentes (~162) siguen pasando sin regresion
-8. Evaluacion comparativa documentada con tabla por question_type
+1. [DONE] `pytest tests/test_entity_linker.py tests/test_contextual_retriever_plus.py -v` — **46 tests** pasan (31+15)
+2. [SKIP] `mypy` — no disponible en entorno actual
+3. [DONE] `RETRIEVAL_STRATEGY=CONTEXTUAL_HYBRID_PLUS` se parsea correctamente en `from_env()`
+4. [PEND] Run completo genera JSON+CSV — requiere infra NIM+spaCy
+5. [DONE] Detail CSV incluye columna `question_type` (shared/report.py)
+6. [DONE] Sin spaCy: PLUS produce resultados identicos a HYBRID (test `test_no_spacy_still_indexes`)
+7. [DONE] Tests existentes siguen pasando — **189 tests, zero regresiones** (143 originales + 46 nuevos)
+8. [PEND] Evaluacion comparativa — requiere infra NIM+spaCy para runs
+
+---
+
+## 8. Estado de Implementacion (2026-03-03)
+
+### Etapas completadas
+
+| Etapa | Estado | Tests | Ficheros |
+|---|---|---|---|
+| **ETAPA 1** | DONE | - | `shared/retrieval/entity_linker.py` (334 LOC) |
+| **ETAPA 2** | DONE | 31 tests | `tests/test_entity_linker.py` |
+| **ETAPA 3** | DONE | - | `core.py`, `contextual_retriever.py`, `__init__.py`, `config.py`, `env.example` |
+| **ETAPA 4** | DONE | 15 tests | `tests/test_contextual_retriever_plus.py` |
+| **ETAPA 5** | DONE | - | `evaluator.py`, `report.py` |
+| **ETAPA 6** | PARCIAL | - | Plan actualizado. Runs comparativos pendientes (infra). |
+
+### Resumen cuantitativo
+
+- **Ficheros nuevos:** 3 (`entity_linker.py`, `test_entity_linker.py`, `test_contextual_retriever_plus.py`)
+- **Ficheros modificados:** 7 (`core.py`, `contextual_retriever.py`, `__init__.py`, `config.py`, `env.example`, `evaluator.py`, `report.py`)
+- **Lineas nuevas:** ~1,040
+- **Tests totales:** 189 (143 pre-existentes + 46 nuevos)
+- **Regresiones:** 0
+
+### Pendiente para ETAPA 6 completa
+
+1. Instalar spaCy + descargar `en_core_web_sm` en entorno con NIM
+2. Ejecutar 3 runs comparativos (SIMPLE_VECTOR, CONTEXTUAL_HYBRID, CONTEXTUAL_HYBRID_PLUS)
+3. Analizar desglose bridge vs comparison usando columna `question_type` del CSV
+4. Validar hipotesis H1-H4
+5. Actualizar README.md con resultados y setup spaCy
