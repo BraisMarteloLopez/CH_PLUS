@@ -413,8 +413,195 @@ class ContextualRetriever(BaseRetriever):
         )
 
 
+# =============================================================================
+# CONTEXTUAL RETRIEVER PLUS (con entity cross-linking)
+# =============================================================================
+
+class ContextualRetrieverPlus(BaseRetriever):
+    """
+    Extends ContextualRetriever with entity cross-linking via spaCy NER.
+
+    Composicion: delega enrichment a LLMContextGenerator, luego aplica
+    NER + cross-linking antes de pasar docs al inner retriever.
+
+    Flujo index_documents:
+      1. LLM enrichment batch (context_generator)
+      2. spaCy NER sobre contenido original de cada chunk
+      3. EntityLinker.build_index() -> cross-refs por doc
+      4. Texto final = contexto LLM + contenido original + cross-refs
+      5. Inner retriever (HybridRetriever) indexa texto final
+
+    Sin spaCy: se comporta identicamente a ContextualRetriever.
+    """
+
+    def __init__(
+        self,
+        config: RetrievalConfig,
+        embedding_model: EmbeddingModelProtocol,
+        context_generator: LLMContextGenerator,
+        collection_name: Optional[str] = None,
+        embedding_batch_size: int = 0,
+        max_cross_refs: int = 3,
+        min_shared_entities: int = 1,
+        max_entity_doc_fraction: float = 0.05,
+    ):
+        super().__init__(config)
+        self.embedding_model = embedding_model
+        self.context_generator = context_generator
+        self._original_contents: Dict[str, str] = {}
+
+        # Entity linker config
+        self._max_cross_refs = max_cross_refs
+        self._min_shared_entities = min_shared_entities
+        self._max_entity_doc_fraction = max_entity_doc_fraction
+        self._linker_stats: Dict[str, Any] = {}
+
+        # Inner retriever (HybridRetriever: BM25+Vector+RRF)
+        from .hybrid_retriever import HybridRetriever, HAS_BM25, HAS_TANTIVY
+        if HAS_TANTIVY or HAS_BM25:
+            self._inner_retriever = HybridRetriever(
+                config, embedding_model, collection_name,
+                embedding_batch_size=embedding_batch_size,
+            )
+        else:
+            from .core import SimpleVectorRetriever
+            logger.warning(
+                "CONTEXTUAL_HYBRID_PLUS: ni tantivy ni rank-bm25 disponible, "
+                "usando SimpleVector como inner retriever"
+            )
+            self._inner_retriever = SimpleVectorRetriever(
+                config, embedding_model, collection_name,
+                embedding_batch_size=embedding_batch_size,
+            )
+
+    def index_documents(
+        self,
+        documents: List[Dict[str, Any]],
+        collection_name: Optional[str] = None,
+    ) -> bool:
+        if not documents:
+            logger.warning("index_documents llamado con lista vacia")
+            return False
+
+        start_time = time.perf_counter()
+        logger.info(
+            f"ContextualRetrieverPlus: enriqueciendo {len(documents)} documentos..."
+        )
+
+        try:
+            # Paso 1: LLM enrichment (reutiliza flujo existente)
+            enriched_chunks = self._run_batch_generation(documents)
+
+            # Paso 2: NER + cross-linking (solo si spaCy disponible)
+            cross_refs: Dict[str, str] = {}
+            from .entity_linker import HAS_SPACY
+            if HAS_SPACY:
+                from .entity_linker import EntityLinker
+                linker = EntityLinker(
+                    max_cross_refs=self._max_cross_refs,
+                    min_shared_entities=self._min_shared_entities,
+                    max_entity_doc_fraction=self._max_entity_doc_fraction,
+                )
+                cross_refs = linker.compute_cross_refs(documents)
+                self._linker_stats = linker.get_stats()
+            else:
+                logger.warning(
+                    "CONTEXTUAL_HYBRID_PLUS: spaCy no disponible. "
+                    "Comportamiento identico a CONTEXTUAL_HYBRID."
+                )
+
+            # Paso 3: Construir docs finales
+            enriched_docs = []
+            for chunk in enriched_chunks:
+                self._original_contents[chunk.chunk_id] = chunk.original_content
+
+                # Texto para indexacion: contexto LLM + contenido + cross-refs
+                text = chunk.get_enriched_text()
+                refs = cross_refs.get(chunk.chunk_id, "")
+                if refs:
+                    text = f"{text}\n\n{refs}"
+
+                enriched_docs.append({
+                    "doc_id": chunk.chunk_id,
+                    "content": text,
+                    "title": chunk.full_document_title or "",
+                })
+
+            # Paso 4: Indexar en inner retriever
+            result = self._inner_retriever.index_documents(
+                enriched_docs, collection_name=collection_name
+            )
+
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            self._is_indexed = result
+
+            logger.info(
+                f"ContextualRetrieverPlus: indexacion {elapsed_ms:.0f}ms. "
+                f"Context stats: {self.context_generator.get_stats()}, "
+                f"Linker stats: {self._linker_stats}"
+            )
+            return result
+
+        except Exception as e:
+            logger.error(f"Error en indexacion contextual plus: {e}")
+            return False
+
+    def retrieve(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+    ) -> RetrievalResult:
+        result = self._inner_retriever.retrieve(query, top_k)
+        return self._swap_to_original_contents(result)
+
+    def retrieve_by_vector(
+        self,
+        query_text: str,
+        query_vector: List[float],
+        top_k: Optional[int] = None,
+    ) -> RetrievalResult:
+        result = self._inner_retriever.retrieve_by_vector(
+            query_text, query_vector, top_k
+        )
+        return self._swap_to_original_contents(result)
+
+    def _swap_to_original_contents(
+        self, result: RetrievalResult
+    ) -> RetrievalResult:
+        result.contents = [
+            self._original_contents.get(doc_id, content)
+            for doc_id, content in zip(result.doc_ids, result.contents)
+        ]
+        result.strategy_used = RetrievalStrategy.CONTEXTUAL_HYBRID_PLUS
+        result.metadata["contextual_enrichment"] = True
+        result.metadata["entity_cross_linking"] = True
+        result.metadata["context_generator_stats"] = self.context_generator.get_stats()
+        result.metadata["linker_stats"] = self._linker_stats
+        return result
+
+    def _run_batch_generation(
+        self, documents: List[Dict[str, Any]]
+    ) -> List[EnrichedChunk]:
+        from shared.llm import run_sync
+        batch_size = self.config.context_batch_size
+        return run_sync(
+            self.context_generator.generate_contexts_batch(
+                documents, batch_size=batch_size
+            )
+        )
+
+    def clear_index(self) -> None:
+        self._inner_retriever.clear_index()
+        self.context_generator.clear_cache()
+        self._original_contents.clear()
+        self._linker_stats = {}
+        self._is_indexed = False
+        logger.debug("ContextualRetrieverPlus: indice, cache y mapa limpiados")
+
+
 __all__ = [
     "LLMContextGenerator",
     "ContextualRetriever",
+    "ContextualRetrieverPlus",
     "EnrichedChunk",
 ]

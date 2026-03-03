@@ -186,6 +186,7 @@ class RunExporter:
         if has_reranker:
             fieldnames.extend(["gen_recall", "gen_hit"])
         fieldnames.extend([
+            "question_type",
             "n_expected",
             "primary_metric_type",
             "primary_metric_value",
@@ -234,6 +235,9 @@ class RunExporter:
                 if has_reranker:
                     row["gen_recall"] = round(qr.retrieval.generation_recall, 4)
                     row["gen_hit"] = round(qr.retrieval.generation_hit, 4)
+                row["question_type"] = (
+                    qr.metadata.get("question_type", "") if qr.metadata else ""
+                )
                 row["n_expected"] = len(qr.retrieval.expected_doc_ids)
                 row["primary_metric_type"] = qr.primary_metric_type.value
                 row["primary_metric_value"] = round(

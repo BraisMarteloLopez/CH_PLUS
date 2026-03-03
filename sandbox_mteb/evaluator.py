@@ -688,6 +688,10 @@ class MTEBEvaluator:
             qr_metadata: Dict[str, Any] = {}
             if reranked_status is not None:
                 qr_metadata["reranked"] = reranked_status
+            # Propagar question_type para desglose bridge vs comparison en CSV
+            qt = query.metadata.get("question_type", "")
+            if qt:
+                qr_metadata["question_type"] = qt
 
             if gm is not None:
                 results.append(QueryEvaluationResult(

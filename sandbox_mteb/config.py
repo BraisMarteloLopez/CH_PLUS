@@ -136,7 +136,11 @@ class MTEBConfig:
 
         # Estrategias validas para este sandbox
         from shared.retrieval.core import RetrievalStrategy
-        VALID_STRATEGIES = (RetrievalStrategy.SIMPLE_VECTOR, RetrievalStrategy.CONTEXTUAL_HYBRID)
+        VALID_STRATEGIES = (
+            RetrievalStrategy.SIMPLE_VECTOR,
+            RetrievalStrategy.CONTEXTUAL_HYBRID,
+            RetrievalStrategy.CONTEXTUAL_HYBRID_PLUS,
+        )
         if self.retrieval.strategy not in VALID_STRATEGIES:
             valid_names = ", ".join(s.name for s in VALID_STRATEGIES)
             errors.append(
@@ -144,16 +148,20 @@ class MTEBConfig:
                 f"en sandbox_mteb. Valores validos: {valid_names}"
             )
 
-        # LLM requerido si generacion activa O si estrategia es CONTEXTUAL_HYBRID
+        # LLM requerido si generacion activa O si estrategia contextual
+        _contextual_strategies = (
+            RetrievalStrategy.CONTEXTUAL_HYBRID,
+            RetrievalStrategy.CONTEXTUAL_HYBRID_PLUS,
+        )
         needs_llm = (
             self.generation_enabled
-            or self.retrieval.strategy == RetrievalStrategy.CONTEXTUAL_HYBRID
+            or self.retrieval.strategy in _contextual_strategies
         )
         if needs_llm:
             if not self.infra.llm_base_url:
                 reason = (
-                    "CONTEXTUAL_HYBRID requiere LLM para enriquecimiento"
-                    if self.retrieval.strategy == RetrievalStrategy.CONTEXTUAL_HYBRID
+                    f"{self.retrieval.strategy.name} requiere LLM para enriquecimiento"
+                    if self.retrieval.strategy in _contextual_strategies
                     else "GENERATION_ENABLED=true"
                 )
                 errors.append(f"LLM_BASE_URL requerido ({reason})")

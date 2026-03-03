@@ -29,6 +29,7 @@ class RetrievalStrategy(Enum):
     """Estrategias de retrieval disponibles."""
     SIMPLE_VECTOR = auto()
     CONTEXTUAL_HYBRID = auto()
+    CONTEXTUAL_HYBRID_PLUS = auto()
 
 
 # =============================================================================
@@ -62,6 +63,11 @@ class RetrievalConfig:
     # total: ChromaDB no soporta hnsw:random_seed. Ver DTm-13.
     hnsw_num_threads: int = 1
 
+    # Entity cross-linking (CONTEXTUAL_HYBRID_PLUS)
+    entity_max_cross_refs: int = 3
+    entity_min_shared: int = 1
+    entity_max_doc_fraction: float = 0.05
+
     @classmethod
     def from_env(cls) -> "RetrievalConfig":
         from shared.config_base import _env, _env_int, _env_float
@@ -76,6 +82,9 @@ class RetrievalConfig:
             context_batch_size=_env_int("RETRIEVAL_CONTEXT_BATCH_SIZE", 50),
             bm25_language=_env("RETRIEVAL_BM25_LANGUAGE", "en"),
             hnsw_num_threads=_env_int("HNSW_NUM_THREADS", 1),
+            entity_max_cross_refs=_env_int("ENTITY_MAX_CROSS_REFS", 3),
+            entity_min_shared=_env_int("ENTITY_MIN_SHARED", 1),
+            entity_max_doc_fraction=_env_float("ENTITY_MAX_DOC_FRACTION", 0.05),
         )
 
 
