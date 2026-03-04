@@ -326,12 +326,8 @@ class MTEBEvaluator:
         )
         logger.info(f"  Embedding cargado: {self.config.infra.embedding_model_name}")
 
-        # LLM: requerido si generacion activa O estrategia CONTEXTUAL_HYBRID
-        needs_llm = (
-            self.config.generation_enabled
-            or self.config.retrieval.strategy == RetrievalStrategy.CONTEXTUAL_HYBRID
-        )
-        if needs_llm:
+        # LLM: requerido solo si generacion activa
+        if self.config.generation_enabled:
             self._llm_service = AsyncLLMService(
                 base_url=self.config.infra.llm_base_url,
                 model_name=self.config.infra.llm_model_name,
@@ -478,7 +474,6 @@ class MTEBEvaluator:
             embedding_model=self._embedding_model,
             collection_name=collection_name,
             embedding_batch_size=self.config.infra.embedding_batch_size,
-            llm_service=self._llm_service,
         )
 
         documents = [

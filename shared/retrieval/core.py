@@ -28,8 +28,7 @@ logger = logging.getLogger(__name__)
 class RetrievalStrategy(Enum):
     """Estrategias de retrieval disponibles."""
     SIMPLE_VECTOR = auto()
-    CONTEXTUAL_HYBRID = auto()
-    CONTEXTUAL_HYBRID_PLUS = auto()
+    HYBRID_PLUS = auto()
 
 
 # =============================================================================
@@ -45,15 +44,11 @@ class RetrievalConfig:
     strategy: RetrievalStrategy = RetrievalStrategy.SIMPLE_VECTOR
     retrieval_k: int = 20
 
-    # Pesos RRF (CONTEXTUAL_HYBRID)
+    # Pesos RRF (HYBRID_PLUS)
     bm25_weight: float = 0.5
     vector_weight: float = 0.5
     rrf_k: int = 60
     pre_fusion_k: int = 150
-
-    # Contextual retrieval (optimizado para modelos nano)
-    context_max_tokens: int = 100
-    context_batch_size: int = 50
 
     # BM25
     bm25_language: str = "en"
@@ -63,7 +58,7 @@ class RetrievalConfig:
     # total: ChromaDB no soporta hnsw:random_seed. Ver DTm-13.
     hnsw_num_threads: int = 1
 
-    # Entity cross-linking (CONTEXTUAL_HYBRID_PLUS)
+    # Entity cross-linking (HYBRID_PLUS)
     entity_max_cross_refs: int = 3
     entity_min_shared: int = 1
     entity_max_doc_fraction: float = 0.05
@@ -78,8 +73,6 @@ class RetrievalConfig:
             vector_weight=_env_float("RETRIEVAL_VECTOR_WEIGHT", 0.5),
             pre_fusion_k=_env_int("RETRIEVAL_PRE_FUSION_K", 150),
             rrf_k=_env_int("RETRIEVAL_RRF_K", 60),
-            context_max_tokens=_env_int("RETRIEVAL_CONTEXT_MAX_TOKENS", 100),
-            context_batch_size=_env_int("RETRIEVAL_CONTEXT_BATCH_SIZE", 50),
             bm25_language=_env("RETRIEVAL_BM25_LANGUAGE", "en"),
             hnsw_num_threads=_env_int("HNSW_NUM_THREADS", 1),
             entity_max_cross_refs=_env_int("ENTITY_MAX_CROSS_REFS", 3),

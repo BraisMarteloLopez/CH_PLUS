@@ -22,7 +22,7 @@ boto3>=1.28.0,<2.0
 # --- Utilidades ---
 python-dotenv>=1.0.0,<2.0
 
-# --- NER (Entity Cross-Linking, CONTEXTUAL_HYBRID_PLUS) ---
+# --- NER (Entity Cross-Linking, HYBRID_PLUS) ---
 # Modelo: python -m spacy download en_core_web_sm
 spacy>=3.7.0,<4.0
 

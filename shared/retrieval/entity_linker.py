@@ -6,7 +6,7 @@ Descripcion: NER deterministico (spaCy), indice invertido de entidades,
 
 Ubicacion: shared/retrieval/entity_linker.py
 
-Uso: CONTEXTUAL_HYBRID_PLUS aplica cross-linking durante indexacion
+Uso: HYBRID_PLUS aplica cross-linking durante indexacion
 para mejorar retrieval multi-hop en bridge questions.
 """
 

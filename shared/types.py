@@ -564,7 +564,7 @@ class LLMJudgeProtocol(Protocol):
     """Protocolo para LLM que evalua metricas y genera contextos.
     
     FIX DT-4: max_tokens agregado para compatibilidad con
-    contextual_retriever (que limita tokens de contexto generado).
+    generacion y metricas (limita tokens de respuesta).
     """
 
     def invoke(

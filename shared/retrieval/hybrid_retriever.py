@@ -356,7 +356,7 @@ class HybridRetriever(BaseRetriever):
             vector_scores=per_doc_vector,
             bm25_scores=per_doc_bm25,
             retrieval_time_ms=elapsed_ms,
-            strategy_used=RetrievalStrategy.CONTEXTUAL_HYBRID,
+            strategy_used=RetrievalStrategy.HYBRID_PLUS,
             metadata={
                 "rrf_k": self.config.rrf_k,
                 "pre_fusion_k": pre_k,
