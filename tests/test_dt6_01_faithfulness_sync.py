@@ -8,7 +8,7 @@ from pathlib import Path
 # Setup path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from shared.metrics import LLMJudgeMetrics, MetricType
+from shared.metrics import faithfulness, MetricType
 
 
 class MockJudge:
@@ -29,7 +29,7 @@ def test_faithfulness_sync_no_truncation():
     context = "A" * 8000
     generated = "some answer"
 
-    result = LLMJudgeMetrics.faithfulness(generated, context, judge)
+    result = faithfulness(generated, context, judge)
 
     # El prompt capturado debe contener el contexto integro
     assert judge.captured_prompt is not None, "Judge nunca fue invocado"

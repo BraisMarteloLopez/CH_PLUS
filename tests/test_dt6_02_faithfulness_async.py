@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from shared.metrics import LLMJudgeMetrics, MetricType
+from shared.metrics import faithfulness_async, MetricType
 
 
 class MockJudgeAsync:
@@ -29,7 +29,7 @@ def test_faithfulness_async_no_truncation():
     generated = "some answer"
 
     result = asyncio.run(
-        LLMJudgeMetrics.faithfulness_async(generated, context, judge)
+        faithfulness_async(generated, context, judge)
     )
 
     assert judge.captured_prompt is not None, "Judge async nunca fue invocado"

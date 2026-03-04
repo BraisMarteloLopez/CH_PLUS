@@ -9,7 +9,8 @@ import asyncio
 
 import pytest
 
-from shared.metrics import LLMJudgeMetrics, MetricType
+import shared.metrics as metrics_mod
+from shared.metrics import faithfulness, context_utilization, MetricType
 
 
 class MockJudge:
@@ -41,7 +42,7 @@ def test_context_passed_without_truncation(method, is_async):
     judge = MockJudge()
     context = "A" * 8000
 
-    fn = getattr(LLMJudgeMetrics, method)
+    fn = getattr(metrics_mod, method)
     if "context_utilization" in method:
         args = ("some answer", context, "some question", judge)
     else:
@@ -60,8 +61,8 @@ def test_empty_context_returns_zero_without_invoking_judge():
     """Contexto vacio retorna 0.0 sin invocar judge."""
     judge = MockJudge()
 
-    r1 = LLMJudgeMetrics.faithfulness("answer", "", judge)
+    r1 = faithfulness("answer", "", judge)
     assert r1.value == 0.0
-    r2 = LLMJudgeMetrics.context_utilization("answer", "", "query", judge)
+    r2 = context_utilization("answer", "", "query", judge)
     assert r2.value == 0.0
     assert judge.call_count == 0

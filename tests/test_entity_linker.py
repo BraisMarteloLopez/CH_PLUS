@@ -1,7 +1,7 @@
 """
 Tests unitarios para shared/retrieval/entity_linker.py
 
-Cubre: EntityNormalizer, EntityExtractor (mock), EntityLinker
+Cubre: normalize_entity, EntityExtractor (mock), EntityLinker
 (build_index, IDF filter, generate_cross_refs, compute_cross_refs, get_stats).
 
 spaCy NO requerido: EntityExtractor se mockea inyectando entidades manuales.
@@ -10,7 +10,7 @@ spaCy NO requerido: EntityExtractor se mockea inyectando entidades manuales.
 from unittest.mock import patch, MagicMock
 
 from shared.retrieval.entity_linker import (
-    EntityNormalizer,
+    normalize_entity,
     EntityExtractor,
     EntityLinker,
     DocEntities,
@@ -18,53 +18,53 @@ from shared.retrieval.entity_linker import (
 
 
 # =========================================================================
-# EntityNormalizer
+# normalize_entity
 # =========================================================================
 
-class TestEntityNormalizerBasic:
+class TestNormalizeEntityBasic:
     """Tests basicos de normalizacion."""
 
     def test_lowercase(self):
-        assert EntityNormalizer.normalize("Scott Derrickson") == "scott derrickson"
+        assert normalize_entity("Scott Derrickson") == "scott derrickson"
 
     def test_leading_article_the(self):
-        assert EntityNormalizer.normalize("The United States") == "united states"
+        assert normalize_entity("The United States") == "united states"
 
     def test_leading_article_a(self):
-        assert EntityNormalizer.normalize("A Beautiful Mind") == "beautiful mind"
+        assert normalize_entity("A Beautiful Mind") == "beautiful mind"
 
     def test_leading_article_an(self):
-        assert EntityNormalizer.normalize("An Example") == "example"
+        assert normalize_entity("An Example") == "example"
 
     def test_punctuation_dots(self):
-        assert EntityNormalizer.normalize("U.S.") == "us"
+        assert normalize_entity("U.S.") == "us"
 
     def test_internal_hyphen_preserved(self):
-        assert EntityNormalizer.normalize("Spider-Man") == "spider-man"
+        assert normalize_entity("Spider-Man") == "spider-man"
 
     def test_collapse_spaces(self):
-        assert EntityNormalizer.normalize("  Scott   Derrickson  ") == "scott derrickson"
+        assert normalize_entity("  Scott   Derrickson  ") == "scott derrickson"
 
 
-class TestEntityNormalizerEdgeCases:
+class TestNormalizeEntityEdgeCases:
     """Edge cases de normalizacion."""
 
     def test_empty_string(self):
-        assert EntityNormalizer.normalize("") == ""
+        assert normalize_entity("") == ""
 
     def test_only_spaces(self):
-        assert EntityNormalizer.normalize("   ") == ""
+        assert normalize_entity("   ") == ""
 
     def test_only_punctuation(self):
-        result = EntityNormalizer.normalize("...")
+        result = normalize_entity("...")
         assert result == ""
 
     def test_internal_hyphen_complex(self):
-        assert EntityNormalizer.normalize("Jean-Claude Van Damme") == "jean-claude van damme"
+        assert normalize_entity("Jean-Claude Van Damme") == "jean-claude van damme"
 
     def test_article_not_removed_if_part_of_name(self):
         # "the" solo se elimina al inicio
-        result = EntityNormalizer.normalize("Catherine the Great")
+        result = normalize_entity("Catherine the Great")
         assert "the" in result
 
 
@@ -325,7 +325,7 @@ class TestComputeCrossRefs:
 
         mock_extractor_instance = MagicMock()
         mock_extractor_instance.extract.side_effect = lambda text: [
-            (EntityNormalizer.normalize(name), typ)
+            (normalize_entity(name), typ)
             for name, typ in mock_entities.get(text, [])
         ]
 

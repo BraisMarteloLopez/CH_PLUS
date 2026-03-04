@@ -6,9 +6,9 @@ prefijo "score:", fracciones N/M, defaults, respuestas LLM reales.
 """
 import pytest
 
-from shared.metrics import LLMJudgeMetrics
+from shared.metrics import _extract_score_fallback
 
-_extract = LLMJudgeMetrics._extract_score_fallback
+_extract = _extract_score_fallback
 
 
 @pytest.mark.parametrize("text,expected", [

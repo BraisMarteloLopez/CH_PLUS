@@ -8,7 +8,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from shared.metrics import LLMJudgeMetrics, MetricType
+from shared.metrics import (
+    faithfulness, context_utilization, context_utilization_async,
+    MetricType,
+)
 
 
 class MockJudge:
@@ -33,7 +36,7 @@ def test_context_utilization_sync_no_truncation():
     generated = "some answer"
     query = "some question"
 
-    result = LLMJudgeMetrics.context_utilization(generated, context, query, judge)
+    result = context_utilization(generated, context, query, judge)
 
     assert judge.captured_prompt is not None, "Judge nunca fue invocado"
     assert context in judge.captured_prompt, "Contexto truncado en context_utilization sync"
@@ -48,7 +51,7 @@ def test_context_utilization_async_no_truncation():
     query = "some question"
 
     result = asyncio.run(
-        LLMJudgeMetrics.context_utilization_async(generated, context, query, judge)
+        context_utilization_async(generated, context, query, judge)
     )
 
     assert judge.captured_prompt is not None, "Judge async nunca fue invocado"
@@ -61,12 +64,12 @@ def test_empty_context_returns_zero_no_invoke():
     judge = MockJudge()
 
     # faithfulness sync con contexto vacio
-    r1 = LLMJudgeMetrics.faithfulness("answer", "", judge)
+    r1 = faithfulness("answer", "", judge)
     assert r1.value == 0.0, f"Esperado 0.0, obtenido {r1.value}"
     assert judge.call_count == 0, "Judge no deberia ser invocado con contexto vacio"
 
     # context_utilization sync con contexto vacio
-    r2 = LLMJudgeMetrics.context_utilization("answer", "", "query", judge)
+    r2 = context_utilization("answer", "", "query", judge)
     assert r2.value == 0.0, f"Esperado 0.0, obtenido {r2.value}"
     assert judge.call_count == 0, "Judge no deberia ser invocado con contexto vacio"
 

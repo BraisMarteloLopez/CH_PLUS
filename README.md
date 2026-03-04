@@ -81,7 +81,7 @@ Componentes en `shared/retrieval/entity_linker.py`:
 
 | Componente | Funcion |
 |---|---|
-| `EntityNormalizer` | Lowercase + eliminar articulos + colapsar espacios + eliminar puntuacion (preserva guiones internos) |
+| `normalize_entity()` | Lowercase + eliminar articulos + colapsar espacios + eliminar puntuacion (preserva guiones internos) |
 | `EntityExtractor` | spaCy NER con filtrado de tipos relevantes, deduplicacion, longitud minima 2 chars |
 | `EntityLinker` | Indice invertido + IDF filter + generacion de cross-refs (top-N docs con mas entidades compartidas) |
 | `DocEntities` | Dataclass intermedio: entidades extraidas por documento |

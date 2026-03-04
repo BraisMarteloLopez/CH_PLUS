@@ -41,7 +41,7 @@ pytest tests/test_dtm4_rrf.py     # Archivo especifico
 | `test_dtm5_12_13_secondary_metric_errors.py` | Metricas secundarias fallidas: `MetricResult(value=0.0, error=...)` + warning. Todas fallan: todas con error. | 3 |
 | `test_dtm17_generation_retrieval_metrics.py` | Metricas de retrieval efectivo (post-rerank): `generation_recall`, `generation_hit`, `reranker_rescue_count`, agregacion en `_build_run()`. | 15 |
 | `test_format_context.py` | `_format_context()`: placeholder vacio, headers [Doc N], separador, truncacion, boundary exacto. | 9 |
-| `test_metrics_reference_based.py` | TextNormalizer (accents, dashes, articles) + F1 (boundaries, overlap, duplicados, normalizacion) + EM (boundaries, normalizacion, sin normalize) + Accuracy (basic, extra text, valid_labels). | 15 |
+| `test_metrics_reference_based.py` | normalize_text (accents, dashes, articles) + F1 (boundaries, overlap, duplicados, normalizacion) + EM (boundaries, normalizacion, sin normalize) + Accuracy (basic, extra text, valid_labels). | 15 |
 
 ## Diseno: que se testea y que no
 
@@ -59,7 +59,7 @@ pytest tests/test_dtm4_rrf.py     # Archivo especifico
 | `TantivyIndex` guards | `@patch` HAS_TANTIVY | 17 | Guards retornan antes de tocar Rust. |
 | `_extract_score_fallback()` | Regex pura | 21 | 3 patrones: decimales, escala 1-10, fracciones. |
 | `_format_context()` | String formatting | 9 | Truncacion por max_chars. |
-| TextNormalizer + metricas | Computacion pura | 15 | F1, EM, Accuracy con normalizacion. |
+| normalize_text + metricas | Computacion pura | 15 | F1, EM, Accuracy con normalizacion. |
 | faithfulness/context_util | Mock judge | 10 | No trunca contexto >4000 chars. |
 | Reranker sort + status | Mock retriever/reranker | 7 | Sort descendente, fallback detectado. |
 

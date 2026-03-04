@@ -59,38 +59,34 @@ _RE_NON_ALNUM = re.compile(r"[^\w\s-]")
 _LEADING_ARTICLES = ("the ", "a ", "an ")
 
 
-class EntityNormalizer:
-    """Normalizacion de entidades para matching en indice invertido."""
+def normalize_entity(name: str) -> str:
+    """Normaliza un nombre de entidad para uso como clave del indice invertido.
 
-    @staticmethod
-    def normalize(name: str) -> str:
-        """Normaliza un nombre de entidad para uso como clave del indice.
+    Pasos:
+      1. Lowercase + strip
+      2. Eliminar articulos iniciales (the, a, an)
+      3. Colapsar espacios multiples
+      4. Eliminar puntuacion excepto guiones internos
+         "u.s." -> "us", "spider-man" -> "spider-man"
+    """
+    result = name.lower().strip()
+    if not result:
+        return ""
 
-        Pasos:
-          1. Lowercase + strip
-          2. Eliminar articulos iniciales (the, a, an)
-          3. Colapsar espacios multiples
-          4. Eliminar puntuacion excepto guiones internos
-             "u.s." -> "us", "spider-man" -> "spider-man"
-        """
-        result = name.lower().strip()
-        if not result:
-            return ""
+    # Articulos iniciales
+    for article in _LEADING_ARTICLES:
+        if result.startswith(article):
+            result = result[len(article):]
+            break
 
-        # Articulos iniciales
-        for article in _LEADING_ARTICLES:
-            if result.startswith(article):
-                result = result[len(article):]
-                break
+    # Colapsar espacios
+    result = " ".join(result.split())
 
-        # Colapsar espacios
-        result = " ".join(result.split())
+    # Eliminar puntuacion (preservar guiones internos)
+    result = _RE_INTERNAL_PUNCT.sub("", result)
+    result = _RE_NON_ALNUM.sub("", result)
 
-        # Eliminar puntuacion (preservar guiones internos)
-        result = _RE_INTERNAL_PUNCT.sub("", result)
-        result = _RE_NON_ALNUM.sub("", result)
-
-        return result.strip()
+    return result.strip()
 
 
 # =============================================================================
@@ -136,7 +132,7 @@ class EntityExtractor:
         for ent in doc.ents:
             if ent.label_ not in self.RELEVANT_NER_TYPES:
                 continue
-            normalized = EntityNormalizer.normalize(ent.text)
+            normalized = normalize_entity(ent.text)
             if len(normalized) < self.MIN_ENTITY_LENGTH:
                 continue
             if normalized not in seen:
@@ -337,7 +333,7 @@ class EntityLinker:
 __all__ = [
     "HAS_SPACY",
     "DocEntities",
-    "EntityNormalizer",
+    "normalize_entity",
     "EntityExtractor",
     "EntityLinker",
 ]
