@@ -326,8 +326,12 @@ class MTEBEvaluator:
         )
         logger.info(f"  Embedding cargado: {self.config.infra.embedding_model_name}")
 
-        # LLM: requerido solo si generacion activa
-        if self.config.generation_enabled:
+        # LLM: requerido si generacion activa O si LIGHT_RAG (triplet extraction)
+        needs_llm = (
+            self.config.generation_enabled
+            or self.config.retrieval.strategy == RetrievalStrategy.LIGHT_RAG
+        )
+        if needs_llm:
             self._llm_service = AsyncLLMService(
                 base_url=self.config.infra.llm_base_url,
                 model_name=self.config.infra.llm_model_name,
@@ -474,6 +478,7 @@ class MTEBEvaluator:
             embedding_model=self._embedding_model,
             collection_name=collection_name,
             embedding_batch_size=self.config.infra.embedding_batch_size,
+            llm_service=self._llm_service,
         )
 
         documents = [

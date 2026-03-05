@@ -29,6 +29,7 @@ class RetrievalStrategy(Enum):
     """Estrategias de retrieval disponibles."""
     SIMPLE_VECTOR = auto()
     HYBRID_PLUS = auto()
+    LIGHT_RAG = auto()
 
 
 # =============================================================================
@@ -63,8 +64,14 @@ class RetrievalConfig:
     entity_min_shared: int = 1
     entity_max_doc_fraction: float = 0.05
 
-    # Graph expansion cap (HYBRID_PLUS). 0 = sin limite.
+    # Graph expansion cap (HYBRID_PLUS / LIGHT_RAG). 0 = sin limite.
     max_graph_expansion: int = 30
+
+    # Knowledge graph (LIGHT_RAG)
+    kg_max_hops: int = 2
+    kg_max_text_chars: int = 3000
+    kg_graph_weight: float = 0.3
+    kg_vector_weight: float = 0.7
 
     @classmethod
     def from_env(cls) -> "RetrievalConfig":
@@ -82,6 +89,10 @@ class RetrievalConfig:
             entity_min_shared=_env_int("ENTITY_MIN_SHARED", 1),
             entity_max_doc_fraction=_env_float("ENTITY_MAX_DOC_FRACTION", 0.05),
             max_graph_expansion=_env_int("MAX_GRAPH_EXPANSION", 30),
+            kg_max_hops=_env_int("KG_MAX_HOPS", 2),
+            kg_max_text_chars=_env_int("KG_MAX_TEXT_CHARS", 3000),
+            kg_graph_weight=_env_float("KG_GRAPH_WEIGHT", 0.3),
+            kg_vector_weight=_env_float("KG_VECTOR_WEIGHT", 0.7),
         )
 
 
