@@ -2,12 +2,14 @@
 Tests unitarios para HybridPlusRetriever.
 
 Cubre:
-  - index_documents con graph expansion (mock spaCy + inner retriever)
-  - index_documents sin spaCy (graceful degradation, BM25+Vector+RRF puro)
-  - _expand_with_graph (graph expansion, metadata, strategy_used)
+  - index_documents: inline enrichment + graph construction
+  - index_documents sin spaCy (graceful degradation)
+  - _expand_with_graph: graph expansion during retrieval
+  - _swap_to_original_contents: contenido original para generacion
   - clear_index (limpieza completa)
   - factory get_retriever() devuelve instancia correcta (sin llm_service)
 
+Arquitectura hibrida: LiteGraph inline + graph expansion + swap.
 spaCy/NIM/ChromaDB NO requeridos: todo mockeado.
 """
 
@@ -29,14 +31,14 @@ def _make_mock_inner_retriever():
     inner.index_documents.return_value = True
     inner.retrieve.return_value = RetrievalResult(
         doc_ids=["d1", "d2"],
-        contents=["content 1", "content 2"],
+        contents=["enriched content 1", "enriched content 2"],
         scores=[0.9, 0.8],
         strategy_used=RetrievalStrategy.HYBRID_PLUS,
         metadata={},
     )
     inner.retrieve_by_vector.return_value = RetrievalResult(
         doc_ids=["d1"],
-        contents=["content 1"],
+        contents=["enriched content 1"],
         scores=[0.95],
         strategy_used=RetrievalStrategy.HYBRID_PLUS,
         metadata={},
@@ -76,21 +78,24 @@ SAMPLE_DOCS = [
 
 
 # =========================================================================
-# Test: index_documents con graph (contenido limpio)
+# Test: index_documents with inline enrichment + graph
 # =========================================================================
 
-class TestIndexDocumentsWithGraph:
+class TestIndexDocumentsWithCrossRefs:
 
-    def test_inner_receives_clean_content(self):
-        """Con HAS_SPACY=True, inner retriever recibe docs con contenido LIMPIO."""
+    def test_inner_receives_inline_cross_refs(self):
+        """Inner retriever recibe docs con cross-refs inline en contenido."""
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
 
         mock_linker = MagicMock()
-        mock_linker.compute_cross_ref_graph.return_value = {
-            "d1": ["d2"],
-            "d2": ["d1"],
+        mock_linker.compute_cross_refs.return_value = {
+            "d1": "See also Scott Derrickson regarding scott derrickson.",
+            "d2": "See also Sinister (film) regarding scott derrickson.",
         }
+        mock_linker.get_cross_ref_graph.side_effect = lambda doc_id: {
+            "d1": ["d2"], "d2": ["d1"],
+        }.get(doc_id, [])
         mock_linker.get_stats.return_value = {"total_docs": 3, "total_entities": 4}
 
         with patch("shared.retrieval.entity_linker.HAS_SPACY", True), \
@@ -99,42 +104,73 @@ class TestIndexDocumentsWithGraph:
 
         assert result is True
 
-        indexed_docs = inner.index_documents.call_args[0][0]
+        enriched_docs = inner.index_documents.call_args[0][0]
 
-        # Contenido debe ser ORIGINAL, sin "Related:" contaminando
-        for doc, sample in zip(indexed_docs, SAMPLE_DOCS):
-            assert doc["content"] == sample["content"]
-            assert "Related:" not in doc["content"]
+        d1_doc = next(d for d in enriched_docs if d["doc_id"] == "d1")
+        assert "See also Scott Derrickson" in d1_doc["content"]
+        assert "Scott Derrickson directed Sinister." in d1_doc["content"]
 
-    def test_graph_stored(self):
-        """Grafo de cross-refs se almacena correctamente."""
+        d2_doc = next(d for d in enriched_docs if d["doc_id"] == "d2")
+        assert "See also Sinister (film)" in d2_doc["content"]
+
+        d3_doc = next(d for d in enriched_docs if d["doc_id"] == "d3")
+        assert "See also" not in d3_doc["content"]
+
+    def test_graph_stored_from_linker(self):
+        """Grafo de cross-refs se construye via get_cross_ref_graph."""
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
 
-        expected_graph = {"d1": ["d2"], "d2": ["d1"]}
         mock_linker = MagicMock()
-        mock_linker.compute_cross_ref_graph.return_value = expected_graph
+        mock_linker.compute_cross_refs.return_value = {}
+        mock_linker.get_cross_ref_graph.side_effect = lambda doc_id: {
+            "d1": ["d2"], "d2": ["d1"],
+        }.get(doc_id, [])
         mock_linker.get_stats.return_value = {"total_docs": 3}
 
         with patch("shared.retrieval.entity_linker.HAS_SPACY", True), \
              patch("shared.retrieval.entity_linker.EntityLinker", return_value=mock_linker):
             retriever.index_documents(SAMPLE_DOCS)
 
-        assert retriever._cross_ref_graph == expected_graph
+        assert retriever._cross_ref_graph == {"d1": ["d2"], "d2": ["d1"]}
+
+    def test_no_llm_enrichment_in_content(self):
+        """Contenido indexado NO contiene contexto LLM."""
+        inner = _make_mock_inner_retriever()
+        retriever = _make_retriever(inner=inner)
+
+        mock_linker = MagicMock()
+        mock_linker.compute_cross_refs.return_value = {
+            "d1": "See also Scott Derrickson regarding scott derrickson.",
+        }
+        mock_linker.get_cross_ref_graph.return_value = []
+        mock_linker.get_stats.return_value = {"total_docs": 1}
+
+        with patch("shared.retrieval.entity_linker.HAS_SPACY", True), \
+             patch("shared.retrieval.entity_linker.EntityLinker", return_value=mock_linker):
+            retriever.index_documents([SAMPLE_DOCS[0]])
+
+        enriched_docs = inner.index_documents.call_args[0][0]
+        d1_content = enriched_docs[0]["content"]
+
+        assert "Scott Derrickson directed Sinister." in d1_content
+        assert "See also" in d1_content
+        assert "Context" not in d1_content
 
     def test_linker_stats_stored(self):
         """Despues de indexar con spaCy, _linker_stats se almacena."""
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
 
-        expected_stats = {"total_docs": 3, "total_entities": 4}
+        expected_stats = {"total_docs": 1, "total_entities": 2}
         mock_linker = MagicMock()
-        mock_linker.compute_cross_ref_graph.return_value = {}
+        mock_linker.compute_cross_refs.return_value = {}
+        mock_linker.get_cross_ref_graph.return_value = []
         mock_linker.get_stats.return_value = expected_stats
 
         with patch("shared.retrieval.entity_linker.HAS_SPACY", True), \
              patch("shared.retrieval.entity_linker.EntityLinker", return_value=mock_linker):
-            retriever.index_documents(SAMPLE_DOCS)
+            retriever.index_documents([SAMPLE_DOCS[0]])
 
         assert retriever._linker_stats == expected_stats
 
@@ -143,16 +179,16 @@ class TestIndexDocumentsWithGraph:
         retriever = _make_retriever()
         assert retriever.index_documents([]) is False
 
-    def test_doc_content_map_stored(self):
-        """Mapa doc_id -> contenido se almacena para graph expansion."""
+    def test_original_contents_stored(self):
+        """Contenido original almacenado para swap posterior."""
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
 
         with patch("shared.retrieval.entity_linker.HAS_SPACY", False):
             retriever.index_documents(SAMPLE_DOCS[:2])
 
-        assert retriever._doc_content_map["d1"] == "Scott Derrickson directed Sinister."
-        assert retriever._doc_content_map["d2"] == "Scott Derrickson was born in Sacramento."
+        assert retriever._original_contents["d1"] == "Scott Derrickson directed Sinister."
+        assert retriever._original_contents["d2"] == "Scott Derrickson was born in Sacramento."
 
 
 # =========================================================================
@@ -172,9 +208,9 @@ class TestIndexDocumentsWithoutSpacy:
         assert result is True
         inner.index_documents.assert_called_once()
 
-        indexed_docs = inner.index_documents.call_args[0][0]
-        for doc in indexed_docs:
-            assert "Related:" not in doc["content"]
+        enriched_docs = inner.index_documents.call_args[0][0]
+        for doc in enriched_docs:
+            assert "See also" not in doc["content"]
 
     def test_no_spacy_logs_warning(self, caplog):
         """Con HAS_SPACY=False, se emite warning."""
@@ -196,8 +232,8 @@ class TestIndexDocumentsWithoutSpacy:
         with patch("shared.retrieval.entity_linker.HAS_SPACY", False):
             retriever.index_documents([SAMPLE_DOCS[0]])
 
-        indexed_docs = inner.index_documents.call_args[0][0]
-        assert indexed_docs[0]["content"] == SAMPLE_DOCS[0]["content"]
+        enriched_docs = inner.index_documents.call_args[0][0]
+        assert enriched_docs[0]["content"] == SAMPLE_DOCS[0]["content"]
 
     def test_no_spacy_empty_graph(self):
         """Sin spaCy, el grafo queda vacio."""
@@ -211,6 +247,66 @@ class TestIndexDocumentsWithoutSpacy:
 
 
 # =========================================================================
+# Test: _swap_to_original_contents (for generation)
+# =========================================================================
+
+class TestSwapToOriginalContents:
+
+    def test_retrieve_returns_original_content(self):
+        """retrieve() devuelve contenido original, no enriquecido."""
+        inner = _make_mock_inner_retriever()
+        retriever = _make_retriever(inner=inner)
+        retriever._original_contents = {
+            "d1": "original content 1",
+            "d2": "original content 2",
+        }
+
+        result = retriever.retrieve("some query")
+        assert result.contents == ["original content 1", "original content 2"]
+
+    def test_retrieve_sets_strategy(self):
+        """retrieve() marca strategy_used como HYBRID_PLUS."""
+        inner = _make_mock_inner_retriever()
+        retriever = _make_retriever(inner=inner)
+        retriever._original_contents = {"d1": "orig1", "d2": "orig2"}
+
+        result = retriever.retrieve("query")
+        assert result.strategy_used == RetrievalStrategy.HYBRID_PLUS
+
+    def test_retrieve_sets_metadata(self):
+        """retrieve() establece metadata de cross-linking."""
+        inner = _make_mock_inner_retriever()
+        retriever = _make_retriever(inner=inner)
+        retriever._original_contents = {"d1": "orig1", "d2": "orig2"}
+        retriever._linker_stats = {"total_docs": 2}
+
+        result = retriever.retrieve("query")
+
+        assert result.metadata["entity_cross_linking"] is True
+        assert result.metadata["linker_stats"] == {"total_docs": 2}
+
+    def test_retrieve_by_vector_returns_original(self):
+        """retrieve_by_vector() tambien devuelve contenido original."""
+        inner = _make_mock_inner_retriever()
+        retriever = _make_retriever(inner=inner)
+        retriever._original_contents = {"d1": "orig1"}
+
+        result = retriever.retrieve_by_vector("query", [0.1, 0.2])
+
+        assert result.contents == ["orig1"]
+        assert result.strategy_used == RetrievalStrategy.HYBRID_PLUS
+
+    def test_unknown_doc_id_preserves_indexed(self):
+        """Si doc_id no esta en _original_contents, preserva content del inner."""
+        inner = _make_mock_inner_retriever()
+        retriever = _make_retriever(inner=inner)
+        retriever._original_contents = {}
+
+        result = retriever.retrieve("query")
+        assert result.contents == ["enriched content 1", "enriched content 2"]
+
+
+# =========================================================================
 # Test: _expand_with_graph (graph expansion during retrieval)
 # =========================================================================
 
@@ -221,30 +317,27 @@ class TestGraphExpansion:
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
         retriever._cross_ref_graph = {"d1": ["d3"], "d2": ["d3"]}
-        retriever._doc_content_map = {
-            "d1": "content 1",
-            "d2": "content 2",
-            "d3": "content 3",
+        retriever._original_contents = {
+            "d1": "original 1", "d2": "original 2", "d3": "original 3",
         }
 
         result = retriever.retrieve("some query")
 
-        # d3 deberia aparecer como vecino expandido
         assert "d3" in result.doc_ids
-        assert "content 3" in result.contents
+        # Content should be original (post-swap)
+        d3_idx = result.doc_ids.index("d3")
+        assert result.contents[d3_idx] == "original 3"
         assert result.metadata["graph_expanded"] >= 1
 
     def test_no_duplicate_expansion(self):
         """No se duplican docs que ya estan en el resultado."""
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
-        # d1 ya esta en resultado, no debe duplicarse
         retriever._cross_ref_graph = {"d2": ["d1"]}
-        retriever._doc_content_map = {"d1": "content 1", "d2": "content 2"}
+        retriever._original_contents = {"d1": "orig1", "d2": "orig2"}
 
         result = retriever.retrieve("query")
 
-        # d1 solo debe aparecer una vez
         assert result.doc_ids.count("d1") == 1
         assert result.metadata["graph_expanded"] == 0
 
@@ -253,63 +346,38 @@ class TestGraphExpansion:
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
         retriever._cross_ref_graph = {}
+        retriever._original_contents = {"d1": "orig1", "d2": "orig2"}
 
         result = retriever.retrieve("query")
 
-        assert result.doc_ids == ["d1", "d2"]
+        assert len(result.doc_ids) == 2
         assert result.metadata["graph_expanded"] == 0
-        assert result.metadata["entity_cross_linking"] is False
-
-    def test_retrieve_sets_strategy(self):
-        """retrieve() marca strategy_used como HYBRID_PLUS."""
-        inner = _make_mock_inner_retriever()
-        retriever = _make_retriever(inner=inner)
-        retriever._cross_ref_graph = {}
-
-        result = retriever.retrieve("query")
-        assert result.strategy_used == RetrievalStrategy.HYBRID_PLUS
-
-    def test_retrieve_sets_metadata_with_graph(self):
-        """retrieve() establece metadata de cross-linking cuando hay grafo."""
-        inner = _make_mock_inner_retriever()
-        retriever = _make_retriever(inner=inner)
-        retriever._cross_ref_graph = {"d1": ["d3"]}
-        retriever._doc_content_map = {"d3": "content 3"}
-        retriever._linker_stats = {"total_docs": 3}
-
-        result = retriever.retrieve("query")
-
-        assert result.metadata["entity_cross_linking"] is True
-        assert result.metadata["linker_stats"] == {"total_docs": 3}
-
-    def test_retrieve_by_vector_also_expands(self):
-        """retrieve_by_vector() tambien aplica graph expansion."""
-        inner = _make_mock_inner_retriever()
-        retriever = _make_retriever(inner=inner)
-        retriever._cross_ref_graph = {"d1": ["d3"]}
-        retriever._doc_content_map = {"d3": "content 3"}
-
-        result = retriever.retrieve_by_vector("query", [0.1, 0.2])
-
-        assert "d3" in result.doc_ids
-        assert result.strategy_used == RetrievalStrategy.HYBRID_PLUS
 
     def test_neighbor_scores_lower_than_original(self):
         """Vecinos expandidos tienen scores menores que los originales."""
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
         retriever._cross_ref_graph = {"d1": ["d3"]}
-        retriever._doc_content_map = {"d3": "content 3"}
+        retriever._original_contents = {"d1": "o1", "d2": "o2", "d3": "o3"}
 
         result = retriever.retrieve("query")
 
-        # d3 es el ultimo (expandido)
         d3_idx = result.doc_ids.index("d3")
         d3_score = result.scores[d3_idx]
-
-        # Score de vecino debe ser menor que cualquier score original
         original_min = min(result.scores[:2])
         assert d3_score < original_min
+
+    def test_retrieve_by_vector_also_expands(self):
+        """retrieve_by_vector() tambien aplica graph expansion."""
+        inner = _make_mock_inner_retriever()
+        retriever = _make_retriever(inner=inner)
+        retriever._cross_ref_graph = {"d1": ["d3"]}
+        retriever._original_contents = {"d1": "o1", "d3": "o3"}
+
+        result = retriever.retrieve_by_vector("query", [0.1, 0.2])
+
+        assert "d3" in result.doc_ids
+        assert result.strategy_used == RetrievalStrategy.HYBRID_PLUS
 
 
 # =========================================================================
@@ -319,20 +387,20 @@ class TestGraphExpansion:
 class TestClearIndex:
 
     def test_clear_resets_all_state(self):
-        """clear_index() limpia inner, graph, content_map, stats y flag."""
+        """clear_index() limpia inner, originals, graph, stats y flag."""
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
 
+        retriever._original_contents = {"d1": "x", "d2": "y"}
         retriever._cross_ref_graph = {"d1": ["d2"]}
-        retriever._doc_content_map = {"d1": "x", "d2": "y"}
         retriever._linker_stats = {"total_docs": 2}
         retriever._is_indexed = True
 
         retriever.clear_index()
 
         inner.clear_index.assert_called_once()
+        assert retriever._original_contents == {}
         assert retriever._cross_ref_graph == {}
-        assert retriever._doc_content_map == {}
         assert retriever._linker_stats == {}
         assert retriever._is_indexed is False
 

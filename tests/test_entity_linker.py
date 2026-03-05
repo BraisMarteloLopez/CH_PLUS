@@ -222,11 +222,11 @@ class TestGenerateCrossRefs:
         linker.build_index(docs)
 
         refs_d1 = linker.generate_cross_refs("d1")
-        assert "Related: Scott Derrickson" in refs_d1
+        assert "See also Scott Derrickson" in refs_d1
         assert "scott derrickson" in refs_d1
 
         refs_d2 = linker.generate_cross_refs("d2")
-        assert "Related: Sinister (film)" in refs_d2
+        assert "See also Sinister (film)" in refs_d2
 
     def test_no_shared_entities(self):
         linker = EntityLinker()
@@ -251,7 +251,7 @@ class TestGenerateCrossRefs:
         linker.build_index(docs)
 
         refs = linker.generate_cross_refs("d1")
-        assert refs.count("Related:") == 2
+        assert refs.count("See also") == 2
 
     def test_min_shared_entities(self):
         linker = EntityLinker(min_shared_entities=2)
@@ -276,10 +276,10 @@ class TestGenerateCrossRefs:
         linker.build_index(docs)
 
         refs = linker.generate_cross_refs("d1")
-        lines = refs.split("\n")
         # d3 (3 shared) should appear before d2 (1 shared)
-        assert "More overlap" in lines[0]
-        assert "Less overlap" in lines[1]
+        pos_more = refs.index("More overlap")
+        pos_less = refs.index("Less overlap")
+        assert pos_more < pos_less
 
     def test_filtered_entity_excluded(self):
         """Entidad IDF-filtrada no genera cross-refs."""

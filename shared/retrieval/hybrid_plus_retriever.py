@@ -1,16 +1,25 @@
 """
 Modulo: Hybrid Plus Retriever
-Descripcion: Busqueda hibrida BM25+Vector+RRF con graph expansion via
-             entity cross-linking (spaCy NER).
+Descripcion: Busqueda hibrida BM25+Vector+RRF con LiteGraph inline +
+             graph expansion via entity cross-linking (spaCy NER).
 
 Ubicacion: shared/retrieval/hybrid_plus_retriever.py
 
 Flujo:
     1. NER sobre contenido original de cada doc (si spaCy disponible)
-    2. EntityLinker.compute_cross_ref_graph() -> grafo doc_id -> [vecinos]
-    3. Contenido indexado = contenido ORIGINAL (sin contaminar)
-    4. HybridRetriever indexa texto limpio (BM25+Vector)
-    5. Retrieval: BM25+Vector+RRF -> graph expansion -> candidatos ampliados
+    2. EntityLinker genera cross-refs textuales Y grafo estructurado
+    3. Contenido indexado = original + cross-refs (inline, estilo LiteGraph)
+    4. HybridRetriever indexa texto enriquecido (BM25+Vector)
+    5. Retrieval: BM25+Vector+RRF -> graph expansion -> swap a original
+       para generacion
+
+Doble mecanismo cross-ref:
+    - INLINE: cross-refs en texto indexado mejoran BM25 (bridge terms) y
+      embeddings (semantica relacional). Ambos hops de bridge questions
+      se enriquecen mutuamente.
+    - GRAPH EXPANSION: vecinos del grafo se anaden al pool de candidatos
+      post-retrieval. Safety net para bridge questions donde un hop
+      no aparece en el top-K inicial.
 """
 
 from __future__ import annotations
@@ -33,14 +42,13 @@ logger = logging.getLogger(__name__)
 
 class HybridPlusRetriever(BaseRetriever):
     """
-    Hybrid retrieval (BM25+Vector+RRF) con graph expansion via entity cross-linking.
+    Hybrid retrieval (BM25+Vector+RRF) con LiteGraph inline + graph expansion.
 
-    A diferencia del diseno anterior que contaminaba el contenido indexado con
-    texto de cross-refs, este retriever:
-      - Indexa contenido LIMPIO (embeddings y BM25 sin ruido)
-      - Usa el grafo de entidades para EXPANDIR resultados durante retrieval
-      - Los vecinos del grafo se anaden al pool de candidatos antes del reranker
+    Doble uso de entity cross-linking:
+      1. INLINE: cross-refs textuales en contenido indexado (BM25 + embeddings)
+      2. EXPANSION: grafo de vecinos para ampliar pool de candidatos post-retrieval
 
+    Contenido para generacion: siempre ORIGINAL (sin cross-refs).
     Sin spaCy: se comporta como HybridRetriever puro (BM25+Vector+RRF).
     """
 
@@ -56,6 +64,7 @@ class HybridPlusRetriever(BaseRetriever):
     ):
         super().__init__(config)
         self.embedding_model = embedding_model
+        self._original_contents: Dict[str, str] = {}
 
         # Entity linker config
         self._max_cross_refs = max_cross_refs
@@ -65,9 +74,6 @@ class HybridPlusRetriever(BaseRetriever):
 
         # Cross-ref graph: doc_id -> [related_doc_ids]
         self._cross_ref_graph: Dict[str, List[str]] = {}
-
-        # Doc content map for graph expansion lookups
-        self._doc_content_map: Dict[str, str] = {}
 
         # Inner retriever (HybridRetriever: BM25+Vector+RRF)
         from .hybrid_retriever import HybridRetriever, HAS_BM25, HAS_TANTIVY
@@ -102,11 +108,8 @@ class HybridPlusRetriever(BaseRetriever):
         )
 
         try:
-            # Guardar mapa de contenidos para graph expansion
-            for doc in documents:
-                self._doc_content_map[doc.get("doc_id", "")] = doc.get("content", "")
-
-            # Paso 1: Construir grafo de cross-refs (solo si spaCy disponible)
+            # Paso 1: NER + cross-linking (solo si spaCy disponible)
+            cross_refs: Dict[str, str] = {}
             from .entity_linker import HAS_SPACY
             if HAS_SPACY:
                 from .entity_linker import EntityLinker
@@ -115,11 +118,19 @@ class HybridPlusRetriever(BaseRetriever):
                     min_shared_entities=self._min_shared_entities,
                     max_entity_doc_fraction=self._max_entity_doc_fraction,
                 )
-                self._cross_ref_graph = linker.compute_cross_ref_graph(documents)
+                # Texto inline para indexacion
+                cross_refs = linker.compute_cross_refs(documents)
+                # Grafo estructurado para expansion en retrieval
+                # (build_index ya fue llamado por compute_cross_refs)
+                for doc in documents:
+                    doc_id = doc.get("doc_id", "")
+                    neighbors = linker.get_cross_ref_graph(doc_id)
+                    if neighbors:
+                        self._cross_ref_graph[doc_id] = neighbors
                 self._linker_stats = linker.get_stats()
                 logger.info(
-                    f"HybridPlusRetriever: grafo con "
-                    f"{len(self._cross_ref_graph)} nodos con vecinos"
+                    f"HybridPlusRetriever: {len(cross_refs)} docs con inline refs, "
+                    f"{len(self._cross_ref_graph)} nodos con vecinos en grafo"
                 )
             else:
                 logger.warning(
@@ -127,9 +138,32 @@ class HybridPlusRetriever(BaseRetriever):
                     "Indexando sin cross-refs (BM25+Vector+RRF puro)."
                 )
 
-            # Paso 2: Indexar contenido LIMPIO en inner retriever
+            # Paso 2: Construir docs para indexacion (inline enrichment)
+            enriched_docs = []
+            for doc in documents:
+                doc_id = doc.get("doc_id", "")
+                content = doc.get("content", "")
+                title = doc.get("title", "")
+
+                # Guardar original para swap durante generacion
+                self._original_contents[doc_id] = content
+
+                # Texto indexado = original + cross-refs inline
+                refs = cross_refs.get(doc_id, "")
+                if refs:
+                    indexed_content = f"{content} {refs}"
+                else:
+                    indexed_content = content
+
+                enriched_docs.append({
+                    "doc_id": doc_id,
+                    "content": indexed_content,
+                    "title": title,
+                })
+
+            # Paso 3: Indexar en inner retriever
             result = self._inner_retriever.index_documents(
-                documents, collection_name=collection_name
+                enriched_docs, collection_name=collection_name
             )
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -151,7 +185,8 @@ class HybridPlusRetriever(BaseRetriever):
         top_k: Optional[int] = None,
     ) -> RetrievalResult:
         result = self._inner_retriever.retrieve(query, top_k)
-        return self._expand_with_graph(result, top_k)
+        result = self._expand_with_graph(result)
+        return self._swap_to_original_contents(result)
 
     def retrieve_by_vector(
         self,
@@ -162,22 +197,18 @@ class HybridPlusRetriever(BaseRetriever):
         result = self._inner_retriever.retrieve_by_vector(
             query_text, query_vector, top_k
         )
-        return self._expand_with_graph(result, top_k)
+        result = self._expand_with_graph(result)
+        return self._swap_to_original_contents(result)
 
-    def _expand_with_graph(
-        self, result: RetrievalResult, top_k: Optional[int] = None,
-    ) -> RetrievalResult:
-        """Expande resultados de retrieval usando el grafo de cross-refs.
+    def _expand_with_graph(self, result: RetrievalResult) -> RetrievalResult:
+        """Expande resultados con vecinos del grafo de cross-refs.
 
-        Para cada doc en el top-K inicial, busca vecinos en el grafo y los
-        anade al pool de candidatos si no estan ya presentes.
-        Los vecinos se insertan con score decrementado para no desplazar
-        a los candidatos originales de alto score, pero si para entrar
+        Para cada doc en el resultado, busca vecinos en el grafo y los
+        anade al pool si no estan ya presentes. Vecinos entran con score
+        bajo para no desplazar candidatos originales, pero si para entrar
         en el pool que el reranker evaluara.
         """
         if not self._cross_ref_graph:
-            result.strategy_used = RetrievalStrategy.HYBRID_PLUS
-            result.metadata["entity_cross_linking"] = False
             result.metadata["graph_expanded"] = 0
             return result
 
@@ -186,54 +217,61 @@ class HybridPlusRetriever(BaseRetriever):
         expanded_contents: List[str] = []
         expanded_scores: List[float] = []
 
-        # Score minimo de los resultados originales (para asignar a vecinos)
         min_score = min(result.scores) if result.scores else 0.0
-        neighbor_base_score = min_score * 0.5  # Vecinos entran con score bajo
+        neighbor_base_score = min_score * 0.5
 
-        # Para cada doc recuperado, traer sus vecinos del grafo
         for doc_id in result.doc_ids:
             neighbors = self._cross_ref_graph.get(doc_id, [])
             for neighbor_id in neighbors:
                 if neighbor_id not in existing_ids:
-                    content = self._doc_content_map.get(neighbor_id, "")
+                    # Usar contenido enriquecido del inner retriever doc_map
+                    content = self._original_contents.get(neighbor_id, "")
                     if content:
                         expanded_ids.append(neighbor_id)
                         expanded_contents.append(content)
                         expanded_scores.append(neighbor_base_score)
                         existing_ids.add(neighbor_id)
-                        neighbor_base_score *= 0.9  # Decay para cada vecino extra
+                        neighbor_base_score *= 0.9
 
-        # Append vecinos al final del resultado
         result.doc_ids.extend(expanded_ids)
         result.contents.extend(expanded_contents)
         result.scores.extend(expanded_scores)
 
-        # Extender vector_scores y bm25_scores si existen
         if result.vector_scores:
             result.vector_scores.extend([0.0] * len(expanded_ids))
         if result.bm25_scores:
             result.bm25_scores.extend([0.0] * len(expanded_ids))
 
-        result.strategy_used = RetrievalStrategy.HYBRID_PLUS
-        result.metadata["entity_cross_linking"] = True
-        result.metadata["linker_stats"] = self._linker_stats
         result.metadata["graph_expanded"] = len(expanded_ids)
 
         if expanded_ids:
             logger.debug(
-                f"Graph expansion: +{len(expanded_ids)} vecinos anadidos "
+                f"Graph expansion: +{len(expanded_ids)} vecinos "
                 f"(total {len(result.doc_ids)} candidatos)"
             )
 
         return result
 
+    def _swap_to_original_contents(
+        self, result: RetrievalResult
+    ) -> RetrievalResult:
+        """Reemplaza contenido enriquecido por original para generacion."""
+        result.contents = [
+            self._original_contents.get(doc_id, content)
+            for doc_id, content in zip(result.doc_ids, result.contents)
+        ]
+        result.strategy_used = RetrievalStrategy.HYBRID_PLUS
+        result.metadata["entity_cross_linking"] = bool(self._cross_ref_graph) or bool(self._linker_stats)
+        result.metadata["linker_stats"] = self._linker_stats
+        return result
+
     def clear_index(self) -> None:
         self._inner_retriever.clear_index()
+        self._original_contents.clear()
         self._cross_ref_graph.clear()
-        self._doc_content_map.clear()
         self._linker_stats = {}
         self._is_indexed = False
-        logger.debug("HybridPlusRetriever: indice y grafo limpiados")
+        logger.debug("HybridPlusRetriever: indice, grafo y mapa limpiados")
 
 
 __all__ = [

@@ -252,16 +252,17 @@ class EntityLinker:
 
         top_refs = candidates[: self.max_cross_refs]
 
-        # Generar texto de cross-references
+        # Generar texto de cross-references en lenguaje natural.
+        # Formato optimizado para BM25 (bridge terms) y embeddings (semantica).
         ref_lines: List[str] = []
         for ref_doc_id, _shared_count in top_refs:
             title = self._doc_titles.get(ref_doc_id, ref_doc_id)
-            entities_preview = ", ".join(shared_map[ref_doc_id][:3])
+            entities_str = " and ".join(shared_map[ref_doc_id][:3])
             ref_lines.append(
-                f"Related: {title} (shared: {entities_preview})"
+                f"See also {title} regarding {entities_str}."
             )
 
-        return "\n".join(ref_lines)
+        return " ".join(ref_lines)
 
     def get_cross_ref_graph(self, doc_id: str) -> List[str]:
         """Devuelve lista de doc_ids relacionados (para graph expansion).
