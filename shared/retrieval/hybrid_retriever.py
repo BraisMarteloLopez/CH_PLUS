@@ -216,7 +216,16 @@ class HybridRetriever(BaseRetriever):
         self,
         documents: List[Dict[str, Any]],
         collection_name: Optional[str] = None,
+        bm25_documents: Optional[List[Dict[str, Any]]] = None,
     ) -> bool:
+        """Indexa documentos en vector y BM25.
+
+        Args:
+            documents: Docs para el indice vectorial (embeddings).
+            collection_name: Nombre de la coleccion ChromaDB.
+            bm25_documents: Docs para el indice BM25. Si None, usa
+                ``documents`` para ambos (comportamiento legacy).
+        """
         if not documents:
             logger.warning("index_documents llamado con lista vacia")
             return False
@@ -229,14 +238,17 @@ class HybridRetriever(BaseRetriever):
         vector_ok = self._vector_retriever.index_documents(
             documents, collection_name
         )
-        bm25_count = self._bm25_index.build_index(documents)
+
+        bm25_docs = bm25_documents if bm25_documents is not None else documents
+        bm25_count = self._bm25_index.build_index(bm25_docs)
         bm25_ok = bm25_count > 0
 
         self._is_indexed = vector_ok and bm25_ok
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
+        dual_mode = "dual" if bm25_documents is not None else "shared"
         logger.info(
-            f"HybridRetriever: indexacion {elapsed_ms:.0f}ms. "
+            f"HybridRetriever: indexacion {elapsed_ms:.0f}ms ({dual_mode}). "
             f"Vector: {'OK' if vector_ok else 'FAIL'}, BM25: {bm25_count} docs"
         )
         return self._is_indexed

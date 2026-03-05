@@ -83,8 +83,8 @@ SAMPLE_DOCS = [
 
 class TestIndexDocumentsWithCrossRefs:
 
-    def test_inner_receives_inline_cross_refs(self):
-        """Inner retriever recibe docs con cross-refs inline en contenido."""
+    def test_dual_indexing_vector_gets_original_bm25_gets_enriched(self):
+        """Inner retriever recibe docs originales para vector, enriquecidos para BM25."""
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
 
@@ -104,17 +104,30 @@ class TestIndexDocumentsWithCrossRefs:
 
         assert result is True
 
-        enriched_docs = inner.index_documents.call_args[0][0]
+        # Vector docs (first positional arg) should be ORIGINAL content
+        vector_docs = inner.index_documents.call_args[0][0]
 
-        d1_doc = next(d for d in enriched_docs if d["doc_id"] == "d1")
-        assert "See also Scott Derrickson" in d1_doc["content"]
-        assert "Scott Derrickson directed Sinister." in d1_doc["content"]
+        d1_vec = next(d for d in vector_docs if d["doc_id"] == "d1")
+        assert d1_vec["content"] == "Scott Derrickson directed Sinister."
+        assert "See also" not in d1_vec["content"]
 
-        d2_doc = next(d for d in enriched_docs if d["doc_id"] == "d2")
-        assert "See also Sinister (film)" in d2_doc["content"]
+        d2_vec = next(d for d in vector_docs if d["doc_id"] == "d2")
+        assert d2_vec["content"] == "Scott Derrickson was born in Sacramento."
+        assert "See also" not in d2_vec["content"]
 
-        d3_doc = next(d for d in enriched_docs if d["doc_id"] == "d3")
-        assert "See also" not in d3_doc["content"]
+        # BM25 docs (keyword arg) should be ENRICHED content
+        bm25_docs = inner.index_documents.call_args[1].get("bm25_documents")
+        assert bm25_docs is not None
+
+        d1_bm25 = next(d for d in bm25_docs if d["doc_id"] == "d1")
+        assert "See also Scott Derrickson" in d1_bm25["content"]
+        assert "Scott Derrickson directed Sinister." in d1_bm25["content"]
+
+        d2_bm25 = next(d for d in bm25_docs if d["doc_id"] == "d2")
+        assert "See also Sinister (film)" in d2_bm25["content"]
+
+        d3_bm25 = next(d for d in bm25_docs if d["doc_id"] == "d3")
+        assert "See also" not in d3_bm25["content"]
 
     def test_graph_stored_from_linker(self):
         """Grafo de cross-refs se construye via get_cross_ref_graph."""
@@ -135,7 +148,7 @@ class TestIndexDocumentsWithCrossRefs:
         assert retriever._cross_ref_graph == {"d1": ["d2"], "d2": ["d1"]}
 
     def test_no_llm_enrichment_in_content(self):
-        """Contenido indexado NO contiene contexto LLM."""
+        """Vector docs NO contienen cross-refs ni contexto LLM. BM25 si tiene cross-refs."""
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
 
@@ -150,12 +163,19 @@ class TestIndexDocumentsWithCrossRefs:
              patch("shared.retrieval.entity_linker.EntityLinker", return_value=mock_linker):
             retriever.index_documents([SAMPLE_DOCS[0]])
 
-        enriched_docs = inner.index_documents.call_args[0][0]
-        d1_content = enriched_docs[0]["content"]
+        # Vector docs: original, sin cross-refs
+        vector_docs = inner.index_documents.call_args[0][0]
+        d1_vec = vector_docs[0]["content"]
+        assert "Scott Derrickson directed Sinister." in d1_vec
+        assert "See also" not in d1_vec
+        assert "Context" not in d1_vec
 
-        assert "Scott Derrickson directed Sinister." in d1_content
-        assert "See also" in d1_content
-        assert "Context" not in d1_content
+        # BM25 docs: con cross-refs inline
+        bm25_docs = inner.index_documents.call_args[1].get("bm25_documents")
+        assert bm25_docs is not None
+        d1_bm25 = bm25_docs[0]["content"]
+        assert "See also" in d1_bm25
+        assert "Context" not in d1_bm25
 
     def test_linker_stats_stored(self):
         """Despues de indexar con spaCy, _linker_stats se almacena."""
@@ -224,16 +244,20 @@ class TestIndexDocumentsWithoutSpacy:
 
         assert any("spaCy no disponible" in msg for msg in caplog.messages)
 
-    def test_no_spacy_content_is_original(self):
-        """Sin spaCy, contenido indexado es identico al original."""
+    def test_no_spacy_content_is_original_and_no_bm25_docs(self):
+        """Sin spaCy, contenido indexado es identico al original y bm25_documents=None."""
         inner = _make_mock_inner_retriever()
         retriever = _make_retriever(inner=inner)
 
         with patch("shared.retrieval.entity_linker.HAS_SPACY", False):
             retriever.index_documents([SAMPLE_DOCS[0]])
 
-        enriched_docs = inner.index_documents.call_args[0][0]
-        assert enriched_docs[0]["content"] == SAMPLE_DOCS[0]["content"]
+        vector_docs = inner.index_documents.call_args[0][0]
+        assert vector_docs[0]["content"] == SAMPLE_DOCS[0]["content"]
+
+        # No cross-refs -> bm25_documents should be None (shared indexing)
+        bm25_docs = inner.index_documents.call_args[1].get("bm25_documents")
+        assert bm25_docs is None
 
     def test_no_spacy_empty_graph(self):
         """Sin spaCy, el grafo queda vacio."""
@@ -366,6 +390,38 @@ class TestGraphExpansion:
         d3_score = result.scores[d3_idx]
         original_min = min(result.scores[:2])
         assert d3_score < original_min
+
+    def test_graph_expansion_respects_cap(self):
+        """Graph expansion stops after max_graph_expansion docs."""
+        inner = _make_mock_inner_retriever()
+        retriever = _make_retriever(inner=inner)
+        # Set a very low cap
+        retriever.config.max_graph_expansion = 1
+        # d1 has 3 neighbors, but only 1 should be added
+        retriever._cross_ref_graph = {"d1": ["d3", "d4", "d5"]}
+        retriever._original_contents = {
+            "d1": "o1", "d2": "o2",
+            "d3": "o3", "d4": "o4", "d5": "o5",
+        }
+
+        result = retriever.retrieve("query")
+
+        assert result.metadata["graph_expanded"] == 1
+
+    def test_graph_expansion_no_cap_when_zero(self):
+        """max_graph_expansion=0 means unlimited expansion."""
+        inner = _make_mock_inner_retriever()
+        retriever = _make_retriever(inner=inner)
+        retriever.config.max_graph_expansion = 0
+        retriever._cross_ref_graph = {"d1": ["d3", "d4", "d5"]}
+        retriever._original_contents = {
+            "d1": "o1", "d2": "o2",
+            "d3": "o3", "d4": "o4", "d5": "o5",
+        }
+
+        result = retriever.retrieve("query")
+
+        assert result.metadata["graph_expanded"] == 3
 
     def test_retrieve_by_vector_also_expands(self):
         """retrieve_by_vector() tambien aplica graph expansion."""

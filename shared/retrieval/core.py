@@ -63,6 +63,9 @@ class RetrievalConfig:
     entity_min_shared: int = 1
     entity_max_doc_fraction: float = 0.05
 
+    # Graph expansion cap (HYBRID_PLUS). 0 = sin limite.
+    max_graph_expansion: int = 30
+
     @classmethod
     def from_env(cls) -> "RetrievalConfig":
         from shared.config_base import _env, _env_int, _env_float
@@ -78,6 +81,7 @@ class RetrievalConfig:
             entity_max_cross_refs=_env_int("ENTITY_MAX_CROSS_REFS", 3),
             entity_min_shared=_env_int("ENTITY_MIN_SHARED", 1),
             entity_max_doc_fraction=_env_float("ENTITY_MAX_DOC_FRACTION", 0.05),
+            max_graph_expansion=_env_int("MAX_GRAPH_EXPANSION", 30),
         )
 
 
