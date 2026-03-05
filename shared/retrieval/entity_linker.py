@@ -263,6 +263,34 @@ class EntityLinker:
 
         return "\n".join(ref_lines)
 
+    def get_cross_ref_graph(self, doc_id: str) -> List[str]:
+        """Devuelve lista de doc_ids relacionados (para graph expansion).
+
+        Misma logica que generate_cross_refs pero devuelve IDs en vez de texto.
+        """
+        my_entities = self._doc_to_entities.get(doc_id, set())
+        if not my_entities:
+            return []
+
+        valid_entities = my_entities - self._filtered_entities
+        if not valid_entities:
+            return []
+
+        related: Counter[str] = Counter()
+        for entity in valid_entities:
+            for other_doc_id in self._entity_to_docs[entity]:
+                if other_doc_id != doc_id:
+                    related[other_doc_id] += 1
+
+        if not related:
+            return []
+
+        candidates = [
+            did for did, count in related.most_common()
+            if count >= self.min_shared_entities
+        ]
+        return candidates[: self.max_cross_refs]
+
     def compute_cross_refs(
         self,
         documents: List[Dict[str, Any]],
@@ -311,6 +339,52 @@ class EntityLinker:
         )
 
         return result
+
+    def compute_cross_ref_graph(
+        self,
+        documents: List[Dict[str, Any]],
+    ) -> Dict[str, List[str]]:
+        """Pipeline completo: NER -> build_index -> graph de cross-refs.
+
+        Returns:
+            Dict doc_id -> [related_doc_ids] ordenados por relevancia.
+            Solo doc_ids con al menos un vecino.
+        """
+        if not documents:
+            return {}
+
+        extractor = EntityExtractor()
+        doc_entities_list: List[DocEntities] = []
+
+        t0 = time.perf_counter()
+        for doc in documents:
+            raw_entities = extractor.extract(doc.get("content", ""))
+            doc_entities_list.append(DocEntities(
+                doc_id=doc.get("doc_id", ""),
+                doc_title=doc.get("title", ""),
+                entities=[name for name, _type in raw_entities],
+                raw_entities=raw_entities,
+            ))
+        ner_ms = (time.perf_counter() - t0) * 1000
+
+        self.build_index(doc_entities_list)
+
+        t1 = time.perf_counter()
+        graph: Dict[str, List[str]] = {}
+        for de in doc_entities_list:
+            neighbors = self.get_cross_ref_graph(de.doc_id)
+            if neighbors:
+                graph[de.doc_id] = neighbors
+        link_ms = (time.perf_counter() - t1) * 1000
+
+        n_with_refs = len(graph)
+        logger.info(
+            f"EntityLinker: NER {ner_ms:.0f}ms, "
+            f"graph-linking {link_ms:.0f}ms, "
+            f"{n_with_refs}/{len(documents)} docs con vecinos"
+        )
+
+        return graph
 
     def get_stats(self) -> Dict[str, Any]:
         """Estadisticas del indice para logging y diagnostico."""
