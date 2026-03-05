@@ -1132,8 +1132,8 @@ class MTEBEvaluator:
                 ) / len(with_gen)
                 rescue_count = sum(
                     1 for qr in with_gen
-                    if qr.retrieval.recall_at_k.get(retrieval_k, 0.0) == 0.0
-                    and qr.retrieval.generation_recall > 0.0
+                    if qr.retrieval.generation_recall
+                    > qr.retrieval.recall_at_k.get(retrieval_k, 0.0)
                 )
 
         # Generacion promedio - INCLUYE ZEROS (fix DT-002)

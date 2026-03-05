@@ -100,6 +100,21 @@ class TestGenerationMetricsCalculation:
         # generation: both gold
         assert qrd.generation_recall == 1.0
 
+    def test_partial_rescue_scenario(self):
+        """Retriever finds 1/2 gold docs, reranker completes with 2/2 (DTm-21)."""
+        qrd = QueryRetrievalDetail(
+            retrieved_doc_ids=["x", "b", "c"],
+            retrieved_contents=["cx", "cb", "cc"],
+            retrieval_scores=[0.9, 0.8, 0.7],
+            expected_doc_ids=["x", "y"],
+            generation_doc_ids=["x", "y", "b"],
+            generation_contents=["cx", "cy", "cb"],
+        )
+        # retrieval: 1/2 gold in top-3
+        assert qrd.recall_at_k[3] == 0.5
+        # generation: 2/2 gold -> partial rescue
+        assert qrd.generation_recall == 1.0
+
     def test_single_expected_doc(self):
         """Una sola expected doc -> recall es 0.0 o 1.0."""
         qrd = QueryRetrievalDetail(
